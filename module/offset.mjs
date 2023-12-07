@@ -1,4 +1,4 @@
-<!-- Copyright (C) 2023 anonymous
+/* Copyright (C) 2023 anonymous
 
 This file is part of PSFree.
 
@@ -13,19 +13,23 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU Affero General Public License for more details.
 
 You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
--->
-<html>
-    <head>
-        <meta charset='utf-8'>
-        <title>exploit</title>
-    </head>
+along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
 
-    <body>
-        PS4/PS5 exploit using CVE-2022-22620<br>
-        PS4 versions vulnerable: 6.xx-9.xx (tested 6.00-9.60)<br>
-        PS5 versions vulnerable: 1.xx-5.xx (tested 1.00-5.50)<br>
-        <a href="./about.html" data-jslicense="1">JavaScript license information</a>
-    </body>
-    <script type='module' src='alert.mjs'></script>
-</html>
+// offsets for JSC::JSObject
+export const js_butterfly = 0x8;
+
+// offsets for JSC::JSArrayBufferView
+export const view_m_vector = 0x10;
+export const view_m_length = 0x18;
+export const view_m_mode = 0x1c;
+
+// sizeof JSC::JSArrayBufferView
+export const size_view = 0x20;
+
+// offsets for WTF::StringImpl
+export const strimpl_strlen = 4;
+export const strimpl_m_data = 8;
+export const strimpl_inline_str = 0x14;
+
+// sizeof WTF::StringImpl
+export const size_strimpl = 0x18;
