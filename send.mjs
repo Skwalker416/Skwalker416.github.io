@@ -36,8 +36,8 @@ function dump_eval() {
     const func = mem.addrof(eval).readp(0x18);
 
     debug_log(`base: ${libwebkit_base}`);
-    for (let i = 0; i < 0x50; i++) {
-        debug_log(`${i.toString(16)}: ${func.sub(libwebkit_base)}`);
+    for (let i = 0; i < 0x50; i += 8) {
+        debug_log(`${i.toString(16)}: ${func.read64(i)}`);
     }
 }
 
