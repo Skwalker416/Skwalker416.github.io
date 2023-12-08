@@ -48,7 +48,7 @@ function code_redirect() {
         alert(`test ${i.toString(16)}`);
         let old = func.read64(i);
         func.write64(i, Int.Zero);
-        func("alert('no crash, next...");
+        eval("alert('no crash, next...'");
         func.write64(i, old);
     }
 }
