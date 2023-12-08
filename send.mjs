@@ -37,7 +37,7 @@ function dump_eval() {
 
     debug_log(`base: ${libwebkit_base}`);
     for (let i = 0; i < 0x50; i++) {
-        debug_log(`${i.toString(16): ${func.sub(libwebkit_base)}`);
+        debug_log(`${i.toString(16)}: ${func.sub(libwebkit_base)}`);
     }
 }
 
