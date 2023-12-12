@@ -276,7 +276,7 @@ function rop() {
 
     // the ROP chain is a noop, if we crashed, then we did something wrong
     alert('going to run()');
-  
+   //chain.run();
     alert('returned successfully');
     debug_log('returned successfully');
 
