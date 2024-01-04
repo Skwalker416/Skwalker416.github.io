@@ -26,12 +26,62 @@ import {
 } from './rw.mjs';
 import * as o from './offset.mjs';
 
-export let Addr = null;
 export let mem = null;
 
-function init_module(memory, addr_class) {
+function init_module(memory) {
     mem = memory;
-    Addr = addr_class;
+}
+
+export class Addr extends Int {
+    read8(offset) {
+        const addr = this.add(offset);
+        return mem.read8(addr);
+    }
+
+    read16(offset) {
+        const addr = this.add(offset);
+        return mem.read16(addr);
+    }
+
+    read32(offset) {
+        const addr = this.add(offset);
+        return mem.read32(addr);
+    }
+
+    read64(offset) {
+        const addr = this.add(offset);
+        return mem.read64(addr);
+    }
+
+    // returns a pointer instead of an Int
+    readp(offset) {
+        const addr = this.add(offset);
+        return mem.readp(addr);
+    }
+
+    write8(offset, value) {
+        const addr = this.add(offset);
+
+        mem.write8(addr, value);
+    }
+
+    write16(offset, value) {
+        const addr = this.add(offset);
+
+        mem.write16(addr, value);
+    }
+
+    write32(offset, value) {
+        const addr = this.add(offset);
+
+        mem.write32(addr, value);
+    }
+
+    write64(offset, value) {
+        const addr = this.add(offset);
+
+        mem.write64(addr, value);
+    }
 }
 
 class MemoryBase {
@@ -158,147 +208,21 @@ class MemoryBase {
 }
 
 export class Memory extends MemoryBase {
-    constructor(main, main_addr, worker, worker_addr, worker_index)  {
-        super();
-
-        this.main = main;
-        this.main_addr = main_addr;
-        this.worker = worker;
-        this.worker_addr = worker_addr;
-
-        // The initial creation of the "a" property will change the butterfly
-        // address. Do it now so we can cache it for addrof().
-        worker.a = 0; // dummy value, we just want to create the "a" property
-        this.butterfly = read64(main, worker_index + o.js_butterfly);
-
-        write32(main, worker_index + o.view_m_length, 0xffffffff);
-        // setup main's m_vector to worker
-        write64(main, worker_index + o.view_m_vector, main_addr);
-        write64(worker, o.view_m_vector, worker_addr);
-
-        this._current_addr = main_addr;
-
-        class Addr extends Int {
-            read8(offset) {
-                let addr = this.add(offset);
-                return mem.read8(addr);
-            }
-
-            read16(offset) {
-                let addr = this.add(offset);
-                return mem.read16(addr);
-            }
-
-            read32(offset) {
-                let addr = this.add(offset);
-                return mem.read32(addr);
-            }
-
-            read64(offset) {
-                let addr = this.add(offset);
-                return mem.read64(addr);
-            }
-
-            // returns a pointer instead of an Int
-            readp(offset) {
-                let addr = this.add(offset);
-                return mem.readp(addr);
-            }
-
-            write8(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write8(addr, value);
-            }
-
-            write16(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write16(addr, value);
-            }
-
-            write32(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write32(addr, value);
-            }
-
-            write64(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write64(addr, value);
-            }
-        }
-        init_module(this, Addr);
-    }
-}
-
-export class Memory2 extends MemoryBase {
     constructor(main, worker)  {
         super();
 
         this.main = main;
         this.worker = worker;
 
-        worker.a = main; // ensure a butterfly
-        let butterfly = read64(main, o.js_butterfly);
-        this.butterfly = butterfly;
+        // The initial creation of the "a" property will change the butterfly
+        // address. Do it now so we can cache it for addrof().
+        worker.a = 0; // dummy value, we just want to create the "a" property
+        this.butterfly = read64(main, o.js_butterfly);
 
         write32(main, o.view_m_length, 0xffffffff);
 
         this._current_addr = Int.Zero;
 
-        class Addr extends Int {
-            read8(offset) {
-                let addr = this.add(offset);
-                return mem.read8(addr);
-            }
-
-            read16(offset) {
-                let addr = this.add(offset);
-                return mem.read16(addr);
-            }
-
-            read32(offset) {
-                let addr = this.add(offset);
-                return mem.read32(addr);
-            }
-
-            read64(offset) {
-                let addr = this.add(offset);
-                return mem.read64(addr);
-            }
-
-            // returns a pointer instead of an Int
-            readp(offset) {
-                let addr = this.add(offset);
-                return mem.readp(addr);
-            }
-
-            write8(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write8(addr, value);
-            }
-
-            write16(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write16(addr, value);
-            }
-
-            write32(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write32(addr, value);
-            }
-
-            write64(offset, value) {
-                let addr = this.add(offset);
-
-                mem.write64(addr, value);
-            }
-        }
-        init_module(this, Addr);
+        init_module(this);
     }
 }

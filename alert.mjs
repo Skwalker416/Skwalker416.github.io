@@ -34,6 +34,5 @@ addEventListener('unhandledrejection', (event) => {
     throw reason;
 })
 
-//alert();
 // important that we dynamically import the exploit script after we attach
 import('./exploit.mjs');
