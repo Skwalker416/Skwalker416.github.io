@@ -29,21 +29,26 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
 // 7.xx-8.xx
 export const ps4_8_03 = 1;
 
+//this version is for 8.50
+
+export const ps4_8_50 = 2;
+
 // this version for 9.xx
-export const ps4_9_00 = 2;
+export const ps4_9_00 = 3;
 
 // version 9.xx is for ps5 1.xx-5.xx as well
 export const ps5_5_00 = ps4_9_00;
 
 // this version for 6.50-6.72
-export const ps4_6_50 = 3;
+export const ps4_6_50 = 4;
 
 // this version for 6.00-6.20
-export const ps4_6_00 = 4;
+export const ps4_6_00 = 5;
 
 export function set_target(value) {
     switch (value) {
         case ps4_8_03:
+        case ps4_8_50:
         case ps4_9_00:
         case ps4_6_00:
         case ps4_6_50: {
