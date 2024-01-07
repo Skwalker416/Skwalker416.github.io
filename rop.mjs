@@ -49,8 +49,8 @@ const offset_wk_stack_chk_fail = 0x8d8;
 const offset_wk_strlen = 0x918;
 
 // libSceLibcInternal offsets
-const offset_libc_setjmp = 0x258f4;
-const offset_libc_longjmp = 0x29c58;
+const offset_libc_setjmp = 0x25904;
+const offset_libc_longjmp = 0x29C38;
 
 // see the disassembly of setjmp() from the dump of libSceLibcInternal.sprx
 //
